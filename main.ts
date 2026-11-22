@@ -83,9 +83,9 @@ function solve(text: string): string {
           // freeze check: the moved box stuck in a 2x2 block with a box off its goal
           let dead = false;
           for (const [a, c] of [[0, 2], [0, 3], [1, 2], [1, 3]]) {
-            const s1 = nb[t][a], s2 = nb[t][c], s3 = s1 >= 0 ? nb[s1][c] : -1;
-            const blk = (s: number) => s < 0 || !room(s) || occ[s];
-            if (blk(s1) && blk(s2) && blk(s3) && [t, s1, s2, s3].some((s) => s >= 0 && room(s) && occ[s] && !goal[loc[s]])) { dead = true; break; }
+            const g = [loc[t], loc[t] + D[a], loc[t] + D[c], loc[t] + D[a] + D[c]];
+            const bx2 = (s: number) => { const i = idx.get(s); return i !== undefined && room(i) && occ[i] === 1; };
+            if (g.every((s) => wall[s] || bx2(s)) && g.some((s) => bx2(s) && !goal[s])) { dead = true; break; }
           }
           let nk = -1;
           if (!dead) { nk = enc(nb2, reach(b[j])); }
