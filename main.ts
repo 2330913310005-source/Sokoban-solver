@@ -44,60 +44,78 @@ function solve(text: string): string {
     for (const c of cells) for (const d of [-W, W]) if (Math.floor((c + d) / W) === hr && !wall[c + d] && !loc.includes(c + d)) loc.push(c + d);
     const M = loc.length, idx = new Map(loc.map((c, i) => [c, i])), nb: number[][] = [];
     for (let i = 0; i < M; i++) nb.push(D.map((d) => idx.get(loc[i] + d) ?? -1));
-    const room = (i: number) => i >= 0 && i < cells.length;
-    // Live squares: a lone box there can still be pushed onto a goal.
-    const live = new Uint8Array(M), q: number[] = [];
-    for (let i = 0; i < cells.length; i++) if (goal[loc[i]]) { live[i] = 1; q.push(i); }
+    const R = cells.length, room = (i: number) => i >= 0 && i < R;
+    const gi = new Int32Array(N).fill(-1); loc.forEach((c, i) => { gi[c] = i; });
+    // hd[i]: pushes a lone box at i needs to reach a goal (-1: never, a dead square). Admissible and consistent.
+    const hd = new Int32Array(M).fill(-1), q: number[] = [];
+    for (let i = 0; i < R; i++) if (goal[loc[i]]) { hd[i] = 0; q.push(i); }
     for (let k = 0; k < q.length; k++) for (let d = 0; d < 4; d++) {
       const x = nb[q[k]][d ^ 1], p = x >= 0 ? nb[x][d ^ 1] : -1; // box came from x, pushed from p
-      if (room(x) && p >= 0 && !live[x]) { live[x] = 1; q.push(x); }
+      if (room(x) && p >= 0 && hd[x] < 0) { hd[x] = hd[q[k]] + 1; q.push(x); }
     }
     const K = bx.length, B = M + 1;
     const enc = (b: number[], p: number) => b.reduce((a, v) => a * B + v, 0) * B + p;
-    const occ = new Uint8Array(M), seen = new Uint8Array(M), stk: number[] = [];
-    const reach = (p: number) => { // fills seen[], returns min reachable cell
-      seen.fill(0); stk.length = 0; stk.push(p); seen[p] = 1; let m = p;
-      while (stk.length) { const u = stk.pop()!; if (u < m) m = u; for (const v of nb[u]) if (v >= 0 && !seen[v] && !occ[v]) { seen[v] = 1; stk.push(v); } }
+    // reach() marks the player's area with a fresh stamp (no clearing) and returns its smallest cell.
+    const occ = new Uint8Array(M), seen = new Int32Array(M), vis = new Int32Array(M), stk = new Int32Array(M);
+    let stamp = 0;
+    const reach = (p: number, sn: Int32Array) => {
+      const g = ++stamp; let n = 0, m = p; stk[n++] = p; sn[p] = g;
+      while (n) {
+        const u = stk[--n], a = nb[u]; if (u < m) m = u;
+        for (let e = 0; e < 4; e++) { const v = a[e]; if (v >= 0 && sn[v] !== g && !occ[v]) { sn[v] = g; stk[n++] = v; } }
+      }
       return m;
     };
     const start = bx.map((c) => idx.get(c)!).sort((a, b) => a - b);
-    let p0 = idx.get(loc.find((c) => Math.floor(c / W) === hr)!)!;
-    for (const b of start) occ[b] = 1;
-    const k0 = enc(start, reach(p0));
-    for (const b of start) occ[b] = 0;
-    const par = new Map<number, [number, number, number]>([[k0, [-1, 0, 0]]]);
-    let fr: [number[], number, number][] = [[start, p0, k0]], end = -1;
-    const done = (b: number[]) => b.every((v) => goal[loc[v]]);
-    if (done(start)) continue;
-    search: while (fr.length) {
-      const nx: [number[], number, number][] = [];
-      for (const [b, p, key] of fr) {
+    const p0 = idx.get(loc.find((c) => Math.floor(c / W) === hr)!)!;
+    if (start.every((v) => goal[loc[v]])) continue;
+    for (const v of start) occ[v] = 1;
+    const k0 = enc(start, reach(p0, seen));
+    for (const v of start) occ[v] = 0;
+    // A* over pushes with a bucket queue by f = g + h, FIFO within a bucket (deterministic).
+    type Node = [number[], number, number, number, number]; // boxes, player, key, g, h
+    const best = new Map<number, number>([[k0, 0]]), par = new Map<number, [number, number, number]>([[k0, [-1, 0, 0]]]);
+    const h0 = start.reduce((a, v) => a + hd[v], 0), bk: Node[][] = [];
+    (bk[h0] = []).push([start, p0, k0, 0, h0]);
+    let end = -1;
+    search: for (let f = h0; f < bk.length; f++) {
+      const bucket = bk[f];
+      if (!bucket) continue;
+      for (let qi = 0; qi < bucket.length; qi++) {
+        const [b, p, key, g, h] = bucket[qi];
+        if (best.get(key) !== g) continue;
+        if (h === 0) { end = key; break search; } // h is 0 only with every box on a goal
         for (const v of b) occ[v] = 1;
-        reach(p);
-        const vis = Uint8Array.from(seen);
+        reach(p, vis);
+        const vg = stamp;
         for (let j = 0; j < K; j++) for (let d = 0; d < 4; d++) {
-          const f = nb[b[j]][d ^ 1], t = nb[b[j]][d];
-          if (f < 0 || !vis[f] || !room(t) || occ[t] || !live[t]) continue;
-          const nb2 = b.slice(); nb2[j] = t; nb2.sort((x, y) => x - y);
+          const fr = nb[b[j]][d ^ 1], t = nb[b[j]][d];
+          if (fr < 0 || vis[fr] !== vg || !room(t) || occ[t] || hd[t] < 0) continue;
           occ[b[j]] = 0; occ[t] = 1;
-          // freeze check: the moved box stuck in a 2x2 block with a box off its goal
+          // freeze check: the moved box stuck in a 2x2 block of walls and boxes, one box off its goal
           let dead = false;
-          for (const [a, c] of [[0, 2], [0, 3], [1, 2], [1, 3]]) {
-            const g = [loc[t], loc[t] + D[a], loc[t] + D[c], loc[t] + D[a] + D[c]];
-            const bx2 = (s: number) => { const i = idx.get(s); return i !== undefined && room(i) && occ[i] === 1; };
-            if (g.every((s) => wall[s] || bx2(s)) && g.some((s) => bx2(s) && !goal[s])) { dead = true; break; }
+          for (let a = 0; a < 2 && !dead; a++) for (let c = 2; c < 4 && !dead; c++) {
+            const g0 = loc[t], g1 = g0 + D[a], g2 = g0 + D[c], g3 = g1 + D[c];
+            let all = true, off = false;
+            for (let z = 0; z < 4; z++) {
+              const s2 = z === 0 ? g0 : z === 1 ? g1 : z === 2 ? g2 : g3, i = gi[s2], isB = i >= 0 && i < R && occ[i] === 1;
+              if (!wall[s2] && !isB) { all = false; break; }
+              if (isB && !goal[s2]) off = true;
+            }
+            dead = all && off;
           }
-          let nk = -1;
-          if (!dead) { nk = enc(nb2, reach(b[j])); }
+          let nb2: number[] = [], nk = -1;
+          if (!dead) { nb2 = b.slice(); nb2[j] = t; nb2.sort((x, y) => x - y); nk = enc(nb2, reach(b[j], seen)); }
           occ[t] = 0; occ[b[j]] = 1;
-          if (dead || par.has(nk)) continue;
-          par.set(nk, [key, b[j], d]);
-          if (done(nb2)) { end = nk; for (const v of b) occ[v] = 0; break search; }
-          nx.push([nb2, b[j], nk]);
+          if (dead) continue;
+          const old = best.get(nk);
+          if (old !== undefined && old <= g + 1) continue;
+          best.set(nk, g + 1); par.set(nk, [key, b[j], d]);
+          const nh = h - hd[b[j]] + hd[t];
+          (bk[g + 1 + nh] ??= []).push([nb2, b[j], nk, g + 1, nh]);
         }
         for (const v of b) occ[v] = 0;
       }
-      fr = nx;
     }
     if (end < 0) continue; // unsolvable room: leave it (never seen)
     const seq: [number, number][] = [];
